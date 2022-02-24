@@ -1,0 +1,28 @@
+sparse.expectFilesOutsideOfPatterns::
+	Typically with sparse checkouts, files not matching any
+	sparsity patterns are marked as such in the index file and
+	missing from the working tree.  Accordingly, Git will
+	ordinarily check whether files that the index indicates are
+	outside of the sparse area are present in the working tree and
+	mark them as present in the index if so.  This option can be
+	used to tell Git that such present-but-unmatching files are
+	expected and to stop checking for them.
++
+The default is `false`.  Paths which are marked as SKIP_WORKTREE
+despite being present (which can occur for a few different reasons)
+typically present a range of problems which are difficult for users to
+discover and recover from.  The default setting avoids such issues.
++
+A Git-based virtual file system (VFS) can turn the usual expectation
+on its head: files are present in the working copy but do not take
+up much disk space because their contents are not downloaded until
+they are accessed.  With such a virtual file system layer, most files
+do not match the sparsity patterns at first, and the VFS layer
+updates the sparsity patterns to add more files whenever files are
+written.  Setting this to `true` supports such a setup where files are
+expected to be present outside the sparse area and a separate, robust
+mechanism is responsible for keeping the sparsity patterns up to date.
++
+Note that the checking and clearing of the SKIP_WORKTREE bit only
+happens when core.sparseCheckout is true, so this config option has no
+effect unless core.sparseCheckout is true.
