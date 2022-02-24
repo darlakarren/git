@@ -1,7 +1,9 @@
 commitGraph.generationVersion::
 	Specifies the type of generation number version to use when writing
 	or reading the commit-graph file. If version 1 is specified, then
-	the corrected commit dates will not be written or read. Defaults to
+	the corrected commit dates will not be written or read. If version
+	3 is specified, then the commit-graph file will be slightly smaller,
+	but will be incompatible with some old versions of Git. Defaults to
 	2.
 
 commitGraph.maxNewFilters::

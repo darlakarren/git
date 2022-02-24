@@ -110,8 +110,13 @@ graph_read_expect() {
 	then
 		OPTIONS=" read_generation_data"
 	fi
+	VERSION=1
+	if test $GENERATION_VERSION -gt 2
+	then
+		VERSION=2
+	fi
 	cat >expect <<- EOF
-	header: 43475048 1 $(test_oid oid_version) $NUM_CHUNKS 0
+	header: 43475048 $VERSION $(test_oid oid_version) $NUM_CHUNKS 0
 	num_commits: $1
 	chunks: oid_fanout oid_lookup commit_metadata$OPTIONAL
 	options:$OPTIONS
@@ -342,6 +347,15 @@ test_expect_success 'build graph using --reachable' '
 
 graph_git_behavior 'append graph, commit 8 vs merge 1' full commits/8 merge/1
 graph_git_behavior 'append graph, commit 8 vs merge 2' full commits/8 merge/2
+
+test_expect_success 'write file format v2 with generation number v3' '
+	cd "$TRASH_DIRECTORY/full" &&
+	git -c commitGraph.generationVersion=3 commit-graph write --reachable &&
+	graph_read_expect "11" "extra_edges" 3
+'
+
+graph_git_behavior 'graph v2, commit 8 vs merge 1' full commits/8 merge/1
+graph_git_behavior 'graph v2, commit 8 vs merge 2' full commits/8 merge/2
 
 test_expect_success 'setup bare repo' '
 	cd "$TRASH_DIRECTORY" &&
@@ -875,6 +889,15 @@ test_expect_success TIME_IS_64BIT,TIME_T_IS_64BIT 'set up and verify repo with g
 	test_merge M left right &&
 	git commit-graph write --reachable &&
 	graph_read_expect 10 "generation_data generation_data_overflow" &&
+	git commit-graph verify
+'
+
+graph_git_behavior 'generation data overflow chunk repo' repo left right
+
+test_expect_success TIME_IS_64BIT,TIME_T_IS_64BIT 'set up and verify repo with generation data overflow chunk (v3)' '
+	cd "$TRASH_DIRECTORY/repo" &&
+	git -c commitGraph.generationVersion=3 commit-graph write --reachable &&
+	graph_read_expect 10 "generation_data_overflow" 3 &&
 	git commit-graph verify
 '
 
