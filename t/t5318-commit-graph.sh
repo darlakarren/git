@@ -815,6 +815,19 @@ test_expect_success 'corrupt commit-graph write (missing tree)' '
 	)
 '
 
+# The remaining tests check timestamps that flow over
+# 32-bits. The graph_git_behavior checks can't take a
+# prereq, so just stop here if we are on a 32-bit machine.
+
+if ! test_have_prereq TIME_IS_64BIT
+then
+	test_done
+fi
+if ! test_have_prereq TIME_T_IS_64BIT
+then
+	test_done
+fi
+
 # We test the overflow-related code with the following repo history:
 #
 #               4:F - 5:N - 6:U
@@ -832,10 +845,10 @@ test_expect_success 'corrupt commit-graph write (missing tree)' '
 # The largest offset observed is 2 ^ 31, just large enough to overflow.
 #
 
-test_expect_success 'set up and verify repo with generation data overflow chunk' '
+test_expect_success TIME_IS_64BIT,TIME_T_IS_64BIT 'set up and verify repo with generation data overflow chunk' '
 	objdir=".git/objects" &&
 	UNIX_EPOCH_ZERO="@0 +0000" &&
-	FUTURE_DATE="@2147483646 +0000" &&
+	FUTURE_DATE="@4000000000 +0000" &&
 	test_oid_cache <<-EOF &&
 	oid_version sha1:1
 	oid_version sha256:2
@@ -866,5 +879,9 @@ test_expect_success 'set up and verify repo with generation data overflow chunk'
 '
 
 graph_git_behavior 'generation data overflow chunk repo' repo left right
+
+# Do not add tests at the end of this file, unless they require 64-bit
+# timestamps, since this portion of the script is only executed when
+# time data types have 64 bits.
 
 test_done
