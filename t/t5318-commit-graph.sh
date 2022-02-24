@@ -100,11 +100,21 @@ graph_read_expect() {
 		OPTIONAL=" $2"
 		NUM_CHUNKS=$((3 + $(echo "$2" | wc -w)))
 	fi
+	GENERATION_VERSION=2
+	if test ! -z "$3"
+	then
+		GENERATION_VERSION=$3
+	fi
+	OPTIONS=
+	if test $GENERATION_VERSION -gt 1
+	then
+		OPTIONS=" read_generation_data"
+	fi
 	cat >expect <<- EOF
 	header: 43475048 1 $(test_oid oid_version) $NUM_CHUNKS 0
 	num_commits: $1
 	chunks: oid_fanout oid_lookup commit_metadata$OPTIONAL
-	options:
+	options:$OPTIONS
 	EOF
 	test-tool read-graph >output &&
 	test_cmp expect output
@@ -498,7 +508,7 @@ test_expect_success 'git commit-graph verify' '
 	cd "$TRASH_DIRECTORY/full" &&
 	git rev-parse commits/8 | git -c commitGraph.generationVersion=1 commit-graph write --stdin-commits &&
 	git commit-graph verify >output &&
-	graph_read_expect 9 extra_edges
+	graph_read_expect 9 extra_edges 1
 '
 
 NUM_COMMITS=9
