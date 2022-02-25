@@ -244,6 +244,24 @@ test_expect_success 'expanded in-memory index matches full index' '
 	test_sparse_match git ls-files --stage
 '
 
+test_expect_success 'root directory cannot be sparse' '
+	init_repos &&
+
+	# Remove all in-cone files and directories from the index, collapse index
+	# with `git sparse-checkout reapply`
+	git -C sparse-index rm -r . &&
+	git -C sparse-index sparse-checkout reapply &&
+
+	# Verify sparse directories still present, root directory is not sparse
+	cat >expect <<-EOF &&
+	folder1/
+	folder2/
+	x/
+	EOF
+	git -C sparse-index ls-files --sparse >actual &&
+	test_cmp expect actual
+'
+
 test_expect_success 'status with options' '
 	init_repos &&
 	test_sparse_match ls &&
@@ -258,6 +276,13 @@ test_expect_success 'status with options' '
 	test_all_match git status --porcelain=v2 &&
 	test_all_match git status --porcelain=v2 -z -u &&
 	test_all_match git status --porcelain=v2 -uno
+'
+
+test_expect_success 'status with diff in unexpanded sparse directory' '
+	init_repos &&
+	test_all_match git checkout rename-base &&
+	test_all_match git reset --soft rename-out-to-out &&
+	test_all_match git status --porcelain=v2
 '
 
 test_expect_success 'status reports sparse-checkout' '
@@ -794,6 +819,91 @@ test_expect_success 'update-index --cacheinfo' '
 	test_cmp expect sparse-checkout-out
 '
 
+test_expect_success 'read-tree --merge with files outside sparse definition' '
+	init_repos &&
+
+	test_all_match git checkout -b test-branch update-folder1 &&
+	for MERGE_TREES in "base HEAD update-folder2" \
+			   "update-folder1 update-folder2" \
+			   "update-folder2"
+	do
+		# Clean up and remove on-disk files
+		test_all_match git reset --hard HEAD &&
+		test_sparse_match git sparse-checkout reapply &&
+
+		# Although the index matches, without --no-sparse-checkout, outside-of-
+		# definition files will not exist on disk for sparse checkouts
+		test_all_match git read-tree -mu $MERGE_TREES &&
+		test_all_match git status --porcelain=v2 &&
+		test_path_is_missing sparse-checkout/folder2 &&
+		test_path_is_missing sparse-index/folder2 &&
+
+		test_all_match git read-tree --reset -u HEAD &&
+		test_all_match git status --porcelain=v2 &&
+
+		test_all_match git read-tree -mu --no-sparse-checkout $MERGE_TREES &&
+		test_all_match git status --porcelain=v2 &&
+		test_cmp sparse-checkout/folder2/a sparse-index/folder2/a &&
+		test_cmp sparse-checkout/folder2/a full-checkout/folder2/a || return 1
+	done
+'
+
+test_expect_success 'read-tree --merge with edit/edit conflicts in sparse directories' '
+	init_repos &&
+
+	# Merge of multiple changes to same directory (but not same files) should
+	# succeed
+	test_all_match git read-tree -mu base rename-base update-folder1 &&
+	test_all_match git status --porcelain=v2 &&
+
+	test_all_match git reset --hard &&
+
+	test_all_match git read-tree -mu rename-base update-folder2 &&
+	test_all_match git status --porcelain=v2 &&
+
+	test_all_match git reset --hard &&
+
+	test_all_match test_must_fail git read-tree -mu base update-folder1 rename-out-to-in &&
+	test_all_match test_must_fail git read-tree -mu rename-out-to-in update-folder1
+'
+
+test_expect_success 'read-tree --prefix outside sparse definition' '
+	init_repos &&
+
+	# Cannot read-tree --prefix with a single argument when files exist within
+	# prefix
+	test_all_match test_must_fail git read-tree --prefix=folder1/ -u update-folder1 &&
+
+	test_all_match git read-tree --prefix=folder2/0 -u rename-base &&
+	test_path_is_missing sparse-checkout/folder2 &&
+	test_path_is_missing sparse-index/folder2 &&
+
+	test_all_match git read-tree --reset -u HEAD &&
+	test_all_match git read-tree --prefix=folder2/0 -u --no-sparse-checkout rename-base &&
+	test_cmp sparse-checkout/folder2/0/a sparse-index/folder2/0/a &&
+	test_cmp sparse-checkout/folder2/0/a full-checkout/folder2/0/a
+'
+
+test_expect_success 'read-tree --merge with directory-file conflicts' '
+	init_repos &&
+
+	test_all_match git checkout -b test-branch rename-base &&
+
+	# Although the index matches, without --no-sparse-checkout, outside-of-
+	# definition files will not exist on disk for sparse checkouts
+	test_sparse_match git read-tree -mu rename-out-to-out &&
+	test_sparse_match git status --porcelain=v2 &&
+	test_path_is_missing sparse-checkout/folder2 &&
+	test_path_is_missing sparse-index/folder2 &&
+
+	test_sparse_match git read-tree --reset -u HEAD &&
+	test_sparse_match git status --porcelain=v2 &&
+
+	test_sparse_match git read-tree -mu --no-sparse-checkout rename-out-to-out &&
+	test_sparse_match git status --porcelain=v2 &&
+	test_cmp sparse-checkout/folder2/0/1 sparse-index/folder2/0/1
+'
+
 test_expect_success 'merge, cherry-pick, and rebase' '
 	init_repos &&
 
@@ -1295,6 +1405,25 @@ test_expect_success 'sparse index is not expanded: fetch/pull' '
 	git -C full-checkout commit --allow-empty -m "for pull merge" &&
 	git -C sparse-index commit --allow-empty -m "for pull merge" &&
 	ensure_not_expanded pull full base
+'
+
+test_expect_success 'sparse index is not expanded: read-tree' '
+	init_repos &&
+
+	ensure_not_expanded checkout -b test-branch update-folder1 &&
+	for MERGE_TREES in "update-folder2" \
+			   "base update-folder2" \
+			   "base HEAD update-folder2"
+	do
+		ensure_not_expanded read-tree -mu $MERGE_TREES &&
+		ensure_not_expanded reset --hard HEAD || return 1
+	done &&
+
+	rm -rf sparse-index/deep/deeper2 &&
+	ensure_not_expanded add . &&
+	ensure_not_expanded commit -m "test" &&
+
+	ensure_not_expanded read-tree --prefix=deep/deeper2 -u deepest
 '
 
 test_expect_success 'ls-files' '
