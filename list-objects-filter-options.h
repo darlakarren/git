@@ -72,6 +72,11 @@ struct list_objects_filter_options {
 /* Normalized command line arguments */
 #define CL_ARG__FILTER "filter"
 
+int gently_parse_list_objects_filter(
+	struct list_objects_filter_options *filter_options,
+	const char *arg,
+	struct strbuf *errbuf);
+
 void list_objects_filter_die_if_populated(
 	struct list_objects_filter_options *filter_options);
 

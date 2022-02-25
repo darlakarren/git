@@ -55,7 +55,7 @@ const char *list_object_filter_config_name(enum list_objects_filter_choice c)
  * expand_list_objects_filter_spec() first).  We also "intern" the arg for the
  * convenience of the current command.
  */
-static int gently_parse_list_objects_filter(
+int gently_parse_list_objects_filter(
 	struct list_objects_filter_options *filter_options,
 	const char *arg,
 	struct strbuf *errbuf)

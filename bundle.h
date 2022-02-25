@@ -5,11 +5,14 @@
 #include "cache.h"
 #include "string-list.h"
 
+struct list_objects_filter_options;
+
 struct bundle_header {
 	unsigned version;
 	struct string_list prerequisites;
 	struct string_list references;
 	const struct git_hash_algo *hash_algo;
+	struct list_objects_filter_options *filter;
 };
 
 #define BUNDLE_HEADER_INIT \
