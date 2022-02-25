@@ -49,7 +49,9 @@ void git_test_write_commit_graph_or_die(void)
 #define GRAPH_DATA_WIDTH (the_hash_algo->rawsz + 16)
 
 #define GRAPH_VERSION_1 0x1
-#define GRAPH_VERSION GRAPH_VERSION_1
+#define GRAPH_VERSION_2 0x2
+#define GRAPH_VERSION_MIN GRAPH_VERSION_1
+#define GRAPH_VERSION_MAX GRAPH_VERSION_2
 
 #define GRAPH_EXTRA_EDGES_NEEDED 0x80000000
 #define GRAPH_EDGE_LAST_MASK 0x7fffffff
@@ -63,6 +65,7 @@ void git_test_write_commit_graph_or_die(void)
 			+ GRAPH_FANOUT_SIZE + the_hash_algo->rawsz)
 
 #define CORRECTED_COMMIT_DATE_OFFSET_OVERFLOW (1ULL << 31)
+#define CORRECTED_COMMIT_DATE_OFFSET_OVERFLOW_V3 (1ULL << 29)
 
 /* Remember to update object flag allocation in object.h */
 #define REACHABLE       (1u<<15)
@@ -358,9 +361,10 @@ struct commit_graph *parse_commit_graph(struct repository *r,
 	}
 
 	graph_version = *(unsigned char*)(data + 4);
-	if (graph_version != GRAPH_VERSION) {
-		error(_("commit-graph version %X does not match version %X"),
-		      graph_version, GRAPH_VERSION);
+	if (graph_version < GRAPH_VERSION_MIN ||
+	    graph_version > GRAPH_VERSION_MAX) {
+		error(_("commit-graph version %X is not understood"),
+		      graph_version);
 		return NULL;
 	}
 
@@ -375,6 +379,7 @@ struct commit_graph *parse_commit_graph(struct repository *r,
 
 	graph = alloc_commit_graph();
 
+	graph->version = graph_version;
 	graph->hash_len = the_hash_algo->rawsz;
 	graph->num_chunks = *(unsigned char*)(data + 6);
 	graph->data = graph_map;
@@ -402,11 +407,18 @@ struct commit_graph *parse_commit_graph(struct repository *r,
 	pair_chunk(cf, GRAPH_CHUNKID_EXTRAEDGES, &graph->chunk_extra_edges);
 	pair_chunk(cf, GRAPH_CHUNKID_BASE, &graph->chunk_base_graphs);
 
-	if (get_configured_generation_version(r) >= 2) {
-		pair_chunk(cf, GRAPH_CHUNKID_GENERATION_DATA,
-			&graph->chunk_generation_data);
+	if (graph_version >= GRAPH_VERSION_2 ||
+	    get_configured_generation_version(r) >= 2) {
+		/* Skip this chunk if GRAPH_VERSION_2 or higher. */
+		if (graph_version == GRAPH_VERSION_1)
+			pair_chunk(cf, GRAPH_CHUNKID_GENERATION_DATA,
+				   &graph->chunk_generation_data);
 		pair_chunk(cf, GRAPH_CHUNKID_GENERATION_DATA_OVERFLOW,
 			&graph->chunk_generation_data_overflow);
+
+		if (graph_version >= GRAPH_VERSION_2 ||
+		    graph->chunk_generation_data)
+			graph->read_generation_data = 1;
 	}
 
 	if (r->settings.commit_graph_read_changed_paths) {
@@ -680,6 +692,9 @@ int generation_numbers_enabled(struct repository *r)
 	if (!g->num_commits)
 		return 0;
 
+	if (g->version >= GRAPH_VERSION_2)
+		return g->read_generation_data;
+
 	first_generation = get_be32(g->chunk_commit_data +
 				    g->hash_len + 8) >> 2;
 
@@ -796,14 +811,21 @@ static void fill_commit_graph_info(struct commit *item, struct commit_graph *g, 
 	item->date = (timestamp_t)((date_high << 32) | date_low);
 
 	if (g->read_generation_data) {
-		offset = (timestamp_t)get_be32(g->chunk_generation_data + sizeof(uint32_t) * lex_index);
+		timestamp_t overflow_bit;
+		if (g->version == GRAPH_VERSION_2) {
+			offset = (timestamp_t)(get_be32(commit_data + g->hash_len + 8) >> 2);
+			overflow_bit = CORRECTED_COMMIT_DATE_OFFSET_OVERFLOW_V3;
+		} else {
+			offset = (timestamp_t)get_be32(g->chunk_generation_data + sizeof(uint32_t) * lex_index);
+			overflow_bit = CORRECTED_COMMIT_DATE_OFFSET_OVERFLOW;
+		}
 
-		if (offset & CORRECTED_COMMIT_DATE_OFFSET_OVERFLOW) {
+		if (offset & overflow_bit) {
 			if (!g->chunk_generation_data_overflow)
 				die(_("commit-graph requires overflow generation data but has none"));
 
-			offset_pos = offset ^ CORRECTED_COMMIT_DATE_OFFSET_OVERFLOW;
-			graph_data->generation = get_be64(g->chunk_generation_data_overflow + 8 * offset_pos);
+			offset_pos = offset ^ overflow_bit;
+			graph_data->generation = item->date + get_be64(g->chunk_generation_data_overflow + 8 * offset_pos);
 		} else
 			graph_data->generation = item->date + offset;
 	} else
@@ -1013,6 +1035,7 @@ struct write_commit_graph_context {
 	struct progress *progress;
 	int progress_done;
 	uint64_t progress_cnt;
+	int version;
 
 	char *base_graph_name;
 	int num_commit_graphs_before;
@@ -1096,12 +1119,14 @@ static int write_graph_chunk_data(struct hashfile *f,
 	struct commit **list = ctx->commits.list;
 	struct commit **last = ctx->commits.list + ctx->commits.nr;
 	uint32_t num_extra_edges = 0;
+	int num_generation_data_overflows = 0;
 
 	while (list < last) {
 		struct commit_list *parent;
 		struct object_id *tree;
 		int edge_value;
 		uint32_t packedDate[2];
+		uint32_t generation_data;
 		display_progress(ctx->progress, ++ctx->progress_cnt);
 
 		if (repo_parse_commit_no_graph(ctx->r, *list))
@@ -1181,7 +1206,18 @@ static int write_graph_chunk_data(struct hashfile *f,
 		else
 			packedDate[0] = 0;
 
-		packedDate[0] |= htonl(*topo_level_slab_at(ctx->topo_levels, *list) << 2);
+		if (ctx->version == GRAPH_VERSION_1)
+			generation_data = *topo_level_slab_at(ctx->topo_levels, *list);
+		else {
+			generation_data = commit_graph_data_at(*list)->generation - (*list)->date;
+			if (generation_data > GENERATION_NUMBER_V3_OFFSET_MAX) {
+				generation_data = CORRECTED_COMMIT_DATE_OFFSET_OVERFLOW_V3 |
+						  num_generation_data_overflows;
+				num_generation_data_overflows++;
+			}
+		}
+
+		packedDate[0] |= htonl(generation_data << 2);
 
 		packedDate[1] = htonl((*list)->date);
 		hashwrite(f, packedDate, 8);
@@ -1221,12 +1257,16 @@ static int write_graph_chunk_generation_data_overflow(struct hashfile *f,
 {
 	struct write_commit_graph_context *ctx = data;
 	int i;
+	timestamp_t offset_max = ctx->version >= 2 ?
+					GENERATION_NUMBER_V3_OFFSET_MAX :
+					GENERATION_NUMBER_V2_OFFSET_MAX;
+
 	for (i = 0; i < ctx->commits.nr; i++) {
 		struct commit *c = ctx->commits.list[i];
 		timestamp_t offset = commit_graph_data_at(c)->generation - c->date;
 		display_progress(ctx->progress, ++ctx->progress_cnt);
 
-		if (offset > GENERATION_NUMBER_V2_OFFSET_MAX) {
+		if (offset > offset_max) {
 			hashwrite_be32(f, offset >> 32);
 			hashwrite_be32(f, (uint32_t) offset);
 		}
@@ -1452,6 +1492,13 @@ static void compute_topological_levels(struct write_commit_graph_context *ctx)
 	int i;
 	struct commit_list *list = NULL;
 
+	/*
+	 * Skip topological levels if file format version is two or more,
+	 * since the Commit Data chunk uses corrected commit date offsets.
+	 */
+	if (ctx->version >= 2)
+		return;
+
 	if (ctx->report_progress)
 		ctx->progress = start_delayed_progress(
 					_("Computing commit graph topological levels"),
@@ -1504,6 +1551,9 @@ static void compute_generation_numbers(struct write_commit_graph_context *ctx)
 {
 	int i;
 	struct commit_list *list = NULL;
+	timestamp_t offset_max = ctx->version >= 2 ?
+					GENERATION_NUMBER_V3_OFFSET_MAX :
+					GENERATION_NUMBER_V2_OFFSET_MAX;
 
 	if (ctx->report_progress)
 		ctx->progress = start_delayed_progress(
@@ -1556,11 +1606,15 @@ static void compute_generation_numbers(struct write_commit_graph_context *ctx)
 				if (current->date && current->date > max_corrected_commit_date)
 					max_corrected_commit_date = current->date - 1;
 				commit_graph_data_at(current)->generation = max_corrected_commit_date + 1;
-
-				if (commit_graph_data_at(current)->generation - current->date > GENERATION_NUMBER_V2_OFFSET_MAX)
-					ctx->num_generation_data_overflows++;
 			}
 		}
+	}
+
+	for (i = 0; i < ctx->commits.nr; i++) {
+		struct commit *c = ctx->commits.list[i];
+		timestamp_t offset = commit_graph_data_at(c)->generation - c->date;
+		if (offset > offset_max)
+			ctx->num_generation_data_overflows++;
 	}
 	stop_progress(&ctx->progress);
 }
@@ -1882,7 +1936,7 @@ static int write_commit_graph_file(struct write_commit_graph_context *ctx)
 	add_chunk(cf, GRAPH_CHUNKID_DATA, (hashsz + 16) * ctx->commits.nr,
 		  write_graph_chunk_data);
 
-	if (ctx->write_generation_data)
+	if (ctx->write_generation_data && ctx->version == GRAPH_VERSION_1)
 		add_chunk(cf, GRAPH_CHUNKID_GENERATION_DATA,
 			  sizeof(uint32_t) * ctx->commits.nr,
 			  write_graph_chunk_generation_data);
@@ -1910,7 +1964,7 @@ static int write_commit_graph_file(struct write_commit_graph_context *ctx)
 
 	hashwrite_be32(f, GRAPH_SIGNATURE);
 
-	hashwrite_u8(f, GRAPH_VERSION);
+	hashwrite_u8(f, ctx->version);
 	hashwrite_u8(f, oid_version());
 	hashwrite_u8(f, get_num_chunks(cf));
 	hashwrite_u8(f, ctx->num_commit_graphs_after - 1);
@@ -2290,6 +2344,14 @@ int write_commit_graph(struct object_directory *odb,
 	ctx->total_bloom_filter_data_size = 0;
 	ctx->write_generation_data = (get_configured_generation_version(r) == 2);
 	ctx->num_generation_data_overflows = 0;
+
+	if (get_configured_generation_version(r) == 3)
+		ctx->version = GRAPH_VERSION_2;
+	else
+		ctx->version = GRAPH_VERSION_1;
+
+	if (ctx->version >= GRAPH_VERSION_2)
+		ctx->write_generation_data = 1;
 
 	bloom_settings.bits_per_entry = git_env_ulong("GIT_TEST_BLOOM_SETTINGS_BITS_PER_ENTRY",
 						      bloom_settings.bits_per_entry);

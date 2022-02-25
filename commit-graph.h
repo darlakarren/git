@@ -63,6 +63,12 @@ struct commit_graph {
 	const unsigned char *data;
 	size_t data_len;
 
+	/**
+	 * The 'version' byte mirrors the file format version. This is
+	 * necessary to consider when parsing commits.
+	 */
+	unsigned version;
+
 	unsigned char hash_len;
 	unsigned char num_chunks;
 	uint32_t num_commits;
