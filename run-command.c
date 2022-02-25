@@ -1798,9 +1798,10 @@ int run_processes_parallel_tr2(int n, get_next_task_fn get_next_task,
 	return result;
 }
 
-int run_auto_maintenance(int quiet)
+int run_auto_maintenance(int quiet, const struct strvec *config_opts)
 {
 	int enabled;
+	int i;
 	struct child_process maint = CHILD_PROCESS_INIT;
 
 	if (!git_config_get_bool("maintenance.auto", &enabled) &&
@@ -1809,6 +1810,11 @@ int run_auto_maintenance(int quiet)
 
 	maint.git_cmd = 1;
 	maint.close_object_store = 1;
+
+	if (config_opts)
+		for (i = 0; i<config_opts->nr; i++)
+			strvec_pushl(&maint.args, "-c", config_opts->v[i], NULL);
+
 	strvec_pushl(&maint.args, "maintenance", "run", "--auto", NULL);
 	strvec_push(&maint.args, quiet ? "--quiet" : "--no-quiet");
 

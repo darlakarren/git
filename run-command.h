@@ -222,8 +222,11 @@ int run_command(struct child_process *);
 
 /*
  * Trigger an auto-gc
+ *
+ * config_opts is an optional list of additional config options to
+ * pass to the maintenance process in the form "some.option=value".
  */
-int run_auto_maintenance(int quiet);
+int run_auto_maintenance(int quiet, const struct strvec *config_opts);
 
 #define RUN_COMMAND_NO_STDIN		(1<<0)
 #define RUN_GIT_CMD			(1<<1)

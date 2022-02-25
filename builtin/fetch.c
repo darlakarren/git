@@ -59,7 +59,7 @@ static int prune_tags = -1; /* unspecified */
 
 static int all, append, dry_run, force, keep, multiple, update_head_ok;
 static int write_fetch_head = 1;
-static int verbosity, deepen_relative, set_upstream;
+static int verbosity, deepen_relative, set_upstream, repair;
 static int progress = -1;
 static int enable_auto_gc = 1;
 static int tags = TAGS_DEFAULT, unshallow, update_shallow, deepen;
@@ -189,6 +189,9 @@ static struct option builtin_fetch_options[] = {
 		    N_("deepen history of shallow clone")),
 	OPT_SET_INT_F(0, "unshallow", &unshallow,
 		      N_("convert to a complete repository"),
+		      1, PARSE_OPT_NONEG),
+	OPT_SET_INT_F(0, "repair", &repair,
+		      N_("re-fetch without negotiating common commits"),
 		      1, PARSE_OPT_NONEG),
 	{ OPTION_STRING, 0, "submodule-prefix", &submodule_prefix, N_("dir"),
 		   N_("prepend this to submodule path output"), PARSE_OPT_HIDDEN },
@@ -1293,6 +1296,14 @@ static int check_exist_and_connected(struct ref *ref_map)
 		return -1;
 
 	/*
+	 * Similarly, if we need to repair, we always want to perform a full
+	 * fetch ignoring existing objects.
+	 */
+	if (repair)
+		return -1;
+
+
+	/*
 	 * check_connected() allows objects to merely be promised, but
 	 * we need all direct targets to exist.
 	 */
@@ -1505,6 +1516,8 @@ static struct transport *prepare_transport(struct remote *remote, int deepen)
 		set_option(transport, TRANS_OPT_DEEPEN_RELATIVE, "yes");
 	if (update_shallow)
 		set_option(transport, TRANS_OPT_UPDATE_SHALLOW, "yes");
+	if (repair)
+		set_option(transport, TRANS_OPT_REPAIR, "yes");
 	if (filter_options.choice) {
 		const char *spec =
 			expand_list_objects_filter_spec(&filter_options);
@@ -2075,6 +2088,8 @@ int cmd_fetch(int argc, const char **argv, const char *prefix)
 	struct remote *remote = NULL;
 	int result = 0;
 	int prune_tags_ok = 1;
+	struct strvec auto_maint_opts = STRVEC_INIT;
+	int opt_val;
 
 	packet_trace_identity("fetch");
 
@@ -2281,10 +2296,27 @@ int cmd_fetch(int argc, const char **argv, const char *prefix)
 					     NULL);
 	}
 
-	if (enable_auto_gc)
-		run_auto_maintenance(verbosity < 0);
+	if (enable_auto_gc) {
+		if (repair) {
+			/*
+			 * Hint auto-maintenance strongly to encourage repacking,
+			 * but respect config settings disabling it.
+			 */
+			if (git_config_get_int("gc.autopacklimit", &opt_val))
+				opt_val = -1;
+			if (opt_val != 0)
+				strvec_push(&auto_maint_opts, "gc.autoPackLimit=1");
+
+			if (git_config_get_int("maintenance.incremental-repack.auto", &opt_val))
+				opt_val = -1;
+			if (opt_val != 0)
+				strvec_push(&auto_maint_opts, "maintenance.incremental-repack.auto=-1");
+		}
+		run_auto_maintenance(verbosity < 0, &auto_maint_opts);
+	}
 
  cleanup:
 	string_list_clear(&list, 0);
+	strvec_clear(&auto_maint_opts);
 	return result;
 }
